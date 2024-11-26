@@ -1,12 +1,13 @@
 package utils
 
 import (
+	"os"
 	"time"
 
 	"github.com/dgrijalva/jwt-go"
 )
 
-var jwtSecret = []byte("your_secret_key")
+var jwtSecret = []byte(os.Getenv("AUTH_SECRET"))
 
 func GenerateToken(userID int) (string, error) {
 	claims := jwt.MapClaims{
