@@ -1,24 +1,28 @@
 package main
 
 import (
-	"log"
-	"net/http"
+	"aso/asofi/config"
+	"aso/asofi/controllers"
+	"aso/asofi/middlewares"
 
 	"github.com/gin-gonic/gin"
 )
 
 func main() {
-	log.Println("Starting Asofi API V1.0...")
-	log.Printf("Starting server on port 3000")
+	config.ConnectDB()
 
-	gin.SetMode(gin.DebugMode)
-	router := gin.Default()
+	r := gin.Default()
 
-	// Main Router V1
-	MainRouter := router.Group("/v1")
-	MainRouter.GET("/v1/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"status": "ok",
-		})
+	r.POST("/register", controllers.Register)
+	r.POST("/login", controllers.Login)
+	r.GET("/validate", controllers.ValidateToken)
+
+	protected := r.Group("/")
+	protected.Use(middlewares.AuthMiddleware())
+	protected.GET("/protected", func(c *gin.Context) {
+		userID := c.MustGet("user_id")
+		c.JSON(200, gin.H{"message": "Welcome", "user_id": userID})
 	})
+
+	r.Run("0.0.0.0:3000")
 }
