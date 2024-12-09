@@ -18,7 +18,7 @@ func GetUsers(c *gin.Context) {
 func GetMe(c *gin.Context) {
 	userID := int(c.MustGet("user_id").(float64))
 	var user models.User
-	if err := config.DB.Preload("Followers").Preload("Following").Where("id = ?", userID).First(&user).Error; err != nil {
+	if err := config.DB.Preload("Followers").Preload("Following").Preload("Posts").Where("id = ?", userID).First(&user).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}

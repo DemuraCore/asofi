@@ -20,19 +20,22 @@ func main() {
 	// config.DB.AutoMigrate(&models.User{}, &models.Post{}, &models.Like{}, &models.Comment{})
 
 	r := gin.Default()
+	r.RedirectTrailingSlash = false
 
 	r.POST("/register", controllers.Register)
 	r.POST("/login", controllers.Login)
 
 	core := r.Group("/")
 	core.Use(middlewares.AuthMiddleware())
-	core.GET("/protected", func(c *gin.Context) {
-		userID := c.MustGet("user_id")
-		c.JSON(200, gin.H{"message": "Welcome", "user_id": userID})
-	})
 	core.GET("/users", controllers.GetUsers)
-	core.GET("/me", controllers.GetMe)
-	core.GET("/follow/:id", controllers.Follow)
-	core.DELETE("/unfollow/:id", controllers.Unfollow)
+
+	me := core.Group("/me")
+	me.GET("/", controllers.GetMe)
+	me.GET("/follow/:id", controllers.Follow)
+	me.DELETE("/unfollow/:id", controllers.Unfollow)
+
+	post := core.Group("/post")
+	post.POST("/", controllers.CreatePost)
+
 	r.Run("0.0.0.0:3000")
 }

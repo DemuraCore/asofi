@@ -42,6 +42,12 @@ func Register(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error generating token"})
 		return
 	}
+	// create session
+	session := models.Session{
+		UserID: user.ID,
+		Token:  token,
+	}
+	config.DB.Create(&session)
 
 	c.JSON(http.StatusCreated, gin.H{"data": user, "token": token})
 }
@@ -71,6 +77,13 @@ func Login(c *gin.Context) {
 		return
 	}
 
+	// create session
+	session := models.Session{
+		UserID: user.ID,
+		Token:  token,
+	}
+	config.DB.Create(&session)
+
 	c.JSON(http.StatusOK, gin.H{"data": token})
 }
 
@@ -92,4 +105,12 @@ func ValidateToken(c *gin.Context) {
 		"user_id": claims["user_id"],
 		"exp":     claims["exp"],
 	})
+}
+
+func Logout(c *gin.Context) {
+	// delete session
+	token := c.GetHeader("Authorization")
+	config.DB.Where("token = ?", token).Delete(&models.Session{})
+
+	c.JSON(http.StatusOK, gin.H{"data": "Successfully logged out"})
 }
