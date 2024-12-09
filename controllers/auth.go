@@ -11,60 +11,67 @@ import (
 
 func Register(c *gin.Context) {
 	var user models.User
-
-	// Bind JSON input to the user model
 	if err := c.ShouldBindJSON(&user); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Hash the password
-	hash, err := utils.HashPassword(user.PasswordHash)
+	if err := config.DB.Where("email = ?", user.Email).First(&user).Error; err == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Email already registered"})
+		return
+	}
+
+	// if username is already taken
+	if err := config.DB.Where("username = ?", user.Username).First(&user).Error; err == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Username already taken"})
+		return
+	}
+
+	hashedPassword, err := utils.HashPassword(user.Password)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Password hashing failed"})
-		return
-	}
-	user.PasswordHash = hash
-
-	// Save the user in the database
-	if err := config.DB.Create(&user).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error hashing password"})
 		return
 	}
 
-	c.JSON(http.StatusCreated, gin.H{"message": "User registered successfully"})
+	user.Password = hashedPassword
+	config.DB.Create(&user)
+
+	// Generate token
+	token, err := utils.GenerateToken(int(user.ID))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error generating token"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"data": user, "token": token})
 }
 
 func Login(c *gin.Context) {
-	var userInput models.User
+	var input models.User
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	var user models.User
-
-	// Bind JSON input to the userInput model
-	if err := c.ShouldBindJSON(&userInput); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
+	config.DB.Where("email = ?", input.Email).First(&user)
+	if user.ID == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
 
-	// Find the user by email
-	if err := config.DB.Where("email = ?", userInput.Email).First(&user).Error; err != nil {
+	if err := utils.VerifyPassword(user.Password, input.Password); err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
 
-	// Verify the password
-	if err := utils.VerifyPassword(user.PasswordHash, userInput.PasswordHash); err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
-		return
-	}
-
-	// Generate a JWT token
 	token, err := utils.GenerateToken(int(user.ID))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Token generation failed"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error generating token"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"token": token})
+	c.JSON(http.StatusOK, gin.H{"data": token})
 }
 
 // In Auth Service's controllers/auth.go
