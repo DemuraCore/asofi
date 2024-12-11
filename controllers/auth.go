@@ -9,40 +9,48 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+type RegisterRequest struct {
+	Email    string `json:"email" binding:"required"`
+	Username string `json:"username" binding:"required"`
+	Password string `json:"password" binding:"required"`
+}
+
 func Register(c *gin.Context) {
-	var user models.User
-	if err := c.ShouldBindJSON(&user); err != nil {
+	var input RegisterRequest
+	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	if err := config.DB.Where("email = ?", user.Email).First(&user).Error; err == nil {
+	var user models.User
+
+	if err := config.DB.Where("email = ?", input.Email).First(&user).Error; err == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Email already registered"})
 		return
 	}
 
-	// if username is already taken
-	if err := config.DB.Where("username = ?", user.Username).First(&user).Error; err == nil {
+	if err := config.DB.Where("username = ?", input.Username).First(&user).Error; err == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Username already taken"})
 		return
 	}
 
-	hashedPassword, err := utils.HashPassword(user.Password)
+	hashedPassword, err := utils.HashPassword(input.Password)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error hashing password"})
 		return
 	}
 
 	user.Password = hashedPassword
+	user.Email = input.Email
+	user.Username = input.Username
 	config.DB.Create(&user)
 
-	// Generate token
 	token, err := utils.GenerateToken(int(user.ID))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error generating token"})
 		return
 	}
-	// create session
+
 	session := models.Session{
 		UserID: user.ID,
 		Token:  token,
@@ -52,8 +60,13 @@ func Register(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"data": user, "token": token})
 }
 
+type LoginRequest struct {
+	Email    string `json:"email" binding:"required"`
+	Password string `json:"password" binding:"required"`
+}
+
 func Login(c *gin.Context) {
-	var input models.User
+	var input LoginRequest
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -76,13 +89,6 @@ func Login(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error generating token"})
 		return
 	}
-
-	// create session
-	session := models.Session{
-		UserID: user.ID,
-		Token:  token,
-	}
-	config.DB.Create(&session)
 
 	c.JSON(http.StatusOK, gin.H{"data": token})
 }
