@@ -33,5 +33,5 @@ func main() {
 	me.GET("/follow/:id", controllers.Follow)
 	me.DELETE("/unfollow/:id", controllers.Unfollow)
 
-	r.Run("0.0.0.0:3000")
+	r.Run(":2425")
 }
