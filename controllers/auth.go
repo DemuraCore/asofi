@@ -56,7 +56,7 @@ func Register(c *gin.Context) {
 	user.Name = input.Name
 	config.DB.Create(&user)
 
-	token, err := utils.GenerateToken(int(user.ID))
+	token, err := utils.GenerateToken(int(user.ID), user.Username)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":  500,
@@ -97,7 +97,7 @@ func Login(c *gin.Context) {
 		return
 	}
 
-	token, err := utils.GenerateToken(int(user.ID))
+	token, err := utils.GenerateToken(int(user.ID), user.Username)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "error": "Error generating token"})
 		return

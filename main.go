@@ -52,7 +52,7 @@ func handleConnections(c *gin.Context) {
 func handleMessages() {
 	for {
 		post := <-channels.Broadcast
-		log.Printf("Broadcasting post: %+v\n", post)
+
 		for client := range clients {
 			err := client.WriteJSON(post)
 			if err != nil {

@@ -20,7 +20,7 @@ func GenerateOTP(db *gorm.DB, userID uint) (string, error) {
 		return "", err
 	}
 
-	code := base32.StdEncoding.EncodeToString(otp)
+	code := base32.StdEncoding.EncodeToString(otp)[:5]
 	expiresAt := time.Now().Add(10 * time.Minute)
 
 	otpRecord := models.OTP{

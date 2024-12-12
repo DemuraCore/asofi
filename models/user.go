@@ -14,6 +14,7 @@ type User struct {
 	Email          string    `gorm:"unique;not null"`
 	Password       string    `gorm:"not null" json:"-"`
 	IsPrivate      bool      `gorm:"default:false"`
+	Avatar         string    `gorm:"null"`
 	Verified       bool      `gorm:"default:false"`
 	Posts          []Post    `gorm:"foreignKey:UserID"`
 	Likes          []Like    `gorm:"foreignKey:UserID"`
