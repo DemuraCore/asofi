@@ -8,19 +8,23 @@ import (
 
 type User struct {
 	gorm.Model
-	ID        uint      `gorm:"primaryKey"`
-	Username  string    `gorm:"unique;null"`
-	Email     string    `gorm:"unique;not null"`
-	Password  string    `gorm:"not null" json:"-"`
-	IsPrivate bool      `gorm:"default:false"`
-	Posts     []Post    `gorm:"foreignKey:UserID"`
-	Likes     []Like    `gorm:"foreignKey:UserID"`
-	Comments  []Comment `gorm:"foreignKey:UserID"`
-	Followers []User    `gorm:"many2many:user_follows;joinForeignKey:FollowerID;joinReferences:FollowedID"`
-	Following []User    `gorm:"many2many:user_follows;joinForeignKey:FollowedID;joinReferences:FollowerID"`
-	Session   []Session
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID             uint      `gorm:"primaryKey"`
+	Username       string    `gorm:"unique;null"`
+	Name           string    `gorm:"not null"`
+	Email          string    `gorm:"unique;not null"`
+	Password       string    `gorm:"not null" json:"-"`
+	IsPrivate      bool      `gorm:"default:false"`
+	Verified       bool      `gorm:"default:false"`
+	Posts          []Post    `gorm:"foreignKey:UserID"`
+	Likes          []Like    `gorm:"foreignKey:UserID"`
+	Comments       []Comment `gorm:"foreignKey:UserID"`
+	Followers      []User    `gorm:"many2many:user_follows;joinForeignKey:FollowerID;joinReferences:FollowedID"`
+	Following      []User    `gorm:"many2many:user_follows;joinForeignKey:FollowedID;joinReferences:FollowerID"`
+	FollowingCount int       `gorm:"default:0"`
+	FollowersCount int       `gorm:"default:0"`
+	Session        []Session `gorm:"foreignKey:UserID"`
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 type Post struct {
 	gorm.Model

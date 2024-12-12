@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 func GetUsers(c *gin.Context) {
@@ -18,7 +19,7 @@ func GetUsers(c *gin.Context) {
 func GetMe(c *gin.Context) {
 	userID := int(c.MustGet("user_id").(float64))
 	var user models.User
-	if err := config.DB.Preload("Followers").Preload("Following").Preload("Posts").Where("id = ?", userID).First(&user).Error; err != nil {
+	if err := config.DB.Preload("Posts").Where("id = ?", userID).First(&user).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
@@ -46,9 +47,9 @@ func Follow(c *gin.Context) {
 		return
 	}
 
-	// check if user is already following the user
-	var count int64 = config.DB.Model(&follower).Association("Following").Count()
-
+	// Check if user is already following the user
+	var count int64
+	config.DB.Table("user_follows").Where("follower_id = ? AND followed_id = ?", followerID, following.ID).Count(&count)
 	if count > 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "You are already following this user"})
 		return
@@ -59,8 +60,19 @@ func Follow(c *gin.Context) {
 		return
 	}
 
+	if err := UpdateFollowingCount(follower.ID, 1); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error updating following count"})
+		return
+	}
+
+	if err := UpdateFollowersCount(following.ID, 1); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error updating followers count"})
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{"message": "Successfully followed user"})
 }
+
 func Unfollow(c *gin.Context) {
 	followerID := int(c.MustGet("user_id").(float64))
 	followingID := c.Param("id")
@@ -82,8 +94,8 @@ func Unfollow(c *gin.Context) {
 	}
 
 	// Check if the user is following the other user
-	var count int64 = config.DB.Model(&follower).Association("Following").Count()
-
+	var count int64
+	config.DB.Table("user_follows").Where("follower_id = ? AND followed_id = ?", followerID, following.ID).Count(&count)
 	if count == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "You are not following this user"})
 		return
@@ -91,6 +103,16 @@ func Unfollow(c *gin.Context) {
 
 	if err := config.DB.Model(&follower).Association("Following").Delete(&following); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error unfollowing user"})
+		return
+	}
+
+	if err := UpdateFollowingCount(follower.ID, -1); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error updating following count"})
+		return
+	}
+
+	if err := UpdateFollowersCount(following.ID, -1); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error updating followers count"})
 		return
 	}
 
@@ -110,4 +132,23 @@ func GetFollower(c *gin.Context) {
 	config.DB.Model(&user).Association("Followers").Find(&followers)
 
 	c.JSON(http.StatusOK, gin.H{"data": followers})
+}
+
+func GetUserProfile(c *gin.Context) {
+	username := c.Param("username")
+	var user models.User
+	if err := config.DB.Preload("Posts").Where("username = ?", username).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": user})
+}
+
+func UpdateFollowingCount(userID uint, delta int) error {
+	return config.DB.Model(&models.User{}).Where("id = ?", userID).Update("following_count", gorm.Expr("following_count + ?", delta)).Error
+}
+
+func UpdateFollowersCount(userID uint, delta int) error {
+	return config.DB.Model(&models.User{}).Where("id = ?", userID).Update("followers_count", gorm.Expr("followers_count + ?", delta)).Error
 }
