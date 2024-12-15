@@ -205,3 +205,92 @@ func GetPost(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"data": postData})
 }
+
+type CommentRequest struct {
+	Content string `json:"content" binding:"required"`
+}
+
+func CreateComment(c *gin.Context) {
+	postID := c.Param("id")
+	userID := int(c.MustGet("user_id").(float64))
+
+	var post models.Post
+	if err := config.DB.Where("id = ?", postID).First(&post).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Post not found"})
+		return
+	}
+
+	var req CommentRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	comment := models.Comment{
+		Content: req.Content,
+		UserID:  uint(userID),
+		PostID:  post.ID,
+	}
+	if err := config.DB.Create(&comment).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to create comment"})
+		return
+	}
+
+	post.CommentCount++
+	config.DB.Save(&post)
+
+	channels.PostBroadcast <- post
+
+	c.JSON(http.StatusCreated, gin.H{"data": comment})
+
+}
+
+func DeleteComment(c *gin.Context) {
+	commentID := c.Param("id")
+	userID := int(c.MustGet("user_id").(float64))
+
+	var comment models.Comment
+	if err := config.DB.Where("id = ? AND user_id = ?", commentID, userID).First(&comment).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Comment not found or you are not authorized to delete this comment"})
+		return
+	}
+
+	var post models.Post
+	if err := config.DB.Where("id = ?", comment.PostID).First(&post).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to fetch post"})
+		return
+	}
+
+	if err := config.DB.Delete(&comment).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error deleting comment"})
+		return
+	}
+
+	post.CommentCount--
+	config.DB.Save(&post)
+
+	channels.PostBroadcast <- post
+
+	c.JSON(http.StatusOK, gin.H{"message": "Comment deleted successfully"})
+}
+
+func GetComments(c *gin.Context) {
+	postID := c.Param("id")
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+	offset := (page - 1) * limit
+
+	var post models.Post
+	if err := config.DB.Where("id = ?", postID).First(&post).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Post not found"})
+		return
+	}
+
+	var comments []models.Comment
+	if err := config.DB.Where("post_id = ?", postID).Order("created_at desc").Limit(limit).Offset(offset).Find(&comments).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": comments})
+}

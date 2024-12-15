@@ -43,9 +43,12 @@ func main() {
 	core.POST("/verify/verify-email", controllers.VerifyCODE)
 
 	core.POST("/posts", controllers.CreatePost)
+	core.GET("/posts/:id", controllers.GetPost)
 	core.DELETE("/posts/:id", controllers.DeletePost)
 	core.POST("/posts/like", controllers.LikePost)
 	core.POST("/posts/unlike", controllers.UnlikePost)
+	core.POST("/posts/:id/comments", controllers.CreateComment)
+	core.GET("/posts/:id/comments", controllers.GetComments)
 	noyes.GET("/posts", controllers.ListPosts)
 
 	me := core.Group("/me")
