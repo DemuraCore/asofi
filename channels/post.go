@@ -4,4 +4,5 @@ package channels
 import "aso/asofi/models"
 
 // Shared broadcast channel for WebSocket messages
-var Broadcast = make(chan models.Post)
+var FeedBroadcast = make(chan models.Post)
+var PostBroadcast = make(chan models.Post)

@@ -14,7 +14,7 @@ type User struct {
 	Email          string    `gorm:"unique;not null"`
 	Password       string    `gorm:"not null" json:"-"`
 	IsPrivate      bool      `gorm:"default:false"`
-	Avatar         string    `gorm:"null"`
+	Avatar         string    `gorm:"default:default.jpg"`
 	Verified       bool      `gorm:"default:false"`
 	Posts          []Post    `gorm:"foreignKey:UserID"`
 	Likes          []Like    `gorm:"foreignKey:UserID"`
@@ -29,14 +29,16 @@ type User struct {
 }
 type Post struct {
 	gorm.Model
-	ID        uint   `gorm:"primaryKey"`
-	Content   string `gorm:"not null"`
-	UserID    uint   `gorm:"not null"`
-	User      User
-	Like      []Like
-	Comment   []Comment
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID           uint   `gorm:"primaryKey"`
+	Content      string `gorm:"not null"`
+	UserID       uint   `gorm:"not null"`
+	User         User
+	Like         []Like    `gorm:"foreignKey:PostID"`
+	Comment      []Comment `gorm:"foreignKey:PostID"`
+	LikeCount    int       `gorm:"default:0"`
+	CommentCount int       `gorm:"default:0"`
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 type Like struct {
@@ -44,8 +46,8 @@ type Like struct {
 	ID        uint `gorm:"primaryKey"`
 	UserID    uint `gorm:"not null"`
 	PostID    uint `gorm:"not null"`
-	Post      Post
-	User      User
+	Post      Post `gorm:"foreignKey:PostID"`
+	User      User `gorm:"foreignKey:UserID"`
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }

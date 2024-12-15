@@ -37,3 +37,30 @@ func AuthMiddleware() gin.HandlerFunc {
 		c.Next()
 	}
 }
+
+func AuthMiddlewareNotStrict() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			c.Next()
+			return
+		}
+
+		// Split the "Bearer " prefix from the token
+		tokenParts := strings.Split(authHeader, " ")
+		if len(tokenParts) != 2 || tokenParts[0] != "Bearer" {
+			c.Next()
+			return
+		}
+
+		token := tokenParts[1]
+		claims, err := utils.ValidateToken(token)
+		if err != nil {
+			c.Next()
+			return
+		}
+
+		c.Set("user_id", claims["user_id"])
+		c.Next()
+	}
+}
