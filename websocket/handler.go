@@ -84,31 +84,45 @@ func handlePostConnections(ws *websocket.Conn, postID string) {
 
 func HandleMessages() {
 	for {
-		post := <-channels.FeedBroadcast
-
-		postData := controllers.PostData{
-			Post: post,
-		}
-
-		// Broadcast to feed clients
-		for client := range clients {
-			err := client.WriteJSON(postData)
-			if err != nil {
-				log.Println("Error writing to feed client:", err)
-				client.Close()
-				delete(clients, client)
+		select {
+		case post := <-channels.FeedBroadcast:
+			postData := controllers.PostData{
+				Post: post,
 			}
-		}
-
-		// Broadcast to post-specific clients
-		postID := strconv.Itoa(int(post.ID))
-		if postClients, ok := postClients[postID]; ok {
-			for client := range postClients {
+			// Broadcast to feed clients
+			for client := range clients {
 				err := client.WriteJSON(postData)
 				if err != nil {
-					log.Println("Error writing to post client:", err)
+					log.Println("Error writing to feed client:", err)
 					client.Close()
-					delete(postClients, client)
+					delete(clients, client)
+				}
+			}
+			// Broadcast to post-specific clients
+			postID := strconv.Itoa(int(post.ID))
+			if postClients, ok := postClients[postID]; ok {
+				for client := range postClients {
+					err := client.WriteJSON(postData)
+					if err != nil {
+						log.Println("Error writing to post client:", err)
+						client.Close()
+						delete(postClients, client)
+					}
+				}
+			}
+		case comment := <-channels.CommentBroadcast:
+			commentData := controllers.CommentData{
+				Comment: comment,
+			}
+			postID := strconv.Itoa(int(comment.PostID))
+			if postClients, ok := postClients[postID]; ok {
+				for client := range postClients {
+					err := client.WriteJSON(commentData)
+					if err != nil {
+						log.Println("Error writing to post client:", err)
+						client.Close()
+						delete(postClients, client)
+					}
 				}
 			}
 		}

@@ -210,12 +210,16 @@ type CommentRequest struct {
 	Content string `json:"content" binding:"required"`
 }
 
+type CommentData struct {
+	Comment models.Comment
+}
+
 func CreateComment(c *gin.Context) {
 	postID := c.Param("id")
 	userID := int(c.MustGet("user_id").(float64))
 
 	var post models.Post
-	if err := config.DB.Where("id = ?", postID).First(&post).Error; err != nil {
+	if err := config.DB.Preload("User").Where("id = ?", postID).First(&post).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Post not found"})
 		return
 	}
@@ -239,7 +243,7 @@ func CreateComment(c *gin.Context) {
 	post.CommentCount++
 	config.DB.Save(&post)
 
-	channels.PostBroadcast <- post
+	channels.FeedBroadcast <- post
 
 	c.JSON(http.StatusCreated, gin.H{"data": comment})
 
