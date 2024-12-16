@@ -32,10 +32,6 @@ func Follow(c *gin.Context) {
 	followingID := c.Param("id")
 
 	var follower, following models.User
-	if err := config.DB.Where("id = ?", followerID).First(&follower).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Follower not found"})
-		return
-	}
 
 	if err := config.DB.Where("id = ?", followingID).First(&following).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User to follow not found"})
@@ -71,6 +67,10 @@ func Follow(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Successfully followed user"})
+}
+
+type ProfileData struct {
+	Profile models.User
 }
 
 func Unfollow(c *gin.Context) {
@@ -137,7 +137,7 @@ func GetFollower(c *gin.Context) {
 func GetUserProfile(c *gin.Context) {
 	username := c.Param("username")
 	var user models.User
-	if err := config.DB.Preload("Posts").Where("username = ?", username).First(&user).Error; err != nil {
+	if err := config.DB.Where("username = ?", username).First(&user).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}

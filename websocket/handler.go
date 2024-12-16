@@ -18,13 +18,14 @@ var upgrader = websocket.Upgrader{
 }
 
 var (
-	clients     = make(map[*websocket.Conn]bool)            // Feed clients
-	postClients = make(map[string]map[*websocket.Conn]bool) // Post-specific clients
+	clients        = make(map[*websocket.Conn]bool)            // Feed clients
+	postClients    = make(map[string]map[*websocket.Conn]bool) // Post-specific clients
+	profileClients = make(map[string]map[*websocket.Conn]bool) // Profile clients
 )
 
 func HandleConnections(c *gin.Context) {
-	channel := c.Query("channel") // e.g., "feed" or "post"
-	postID := c.Query("id")       // e.g., post ID for post channel
+	channel := c.Query("channel") // e.g., "feed" or "post" or "profile"
+	ID := c.Query("id")           // e.g., post ID for post channel
 
 	ws, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
@@ -35,8 +36,10 @@ func HandleConnections(c *gin.Context) {
 
 	if channel == "feed" {
 		handleFeedConnections(ws)
-	} else if channel == "post" && postID != "" {
-		handlePostConnections(ws, postID)
+	} else if channel == "post" && ID != "" {
+		handlePostConnections(ws, ID)
+	} else if channel == "profile" && ID != "" {
+		handleProfileConnections(ws, ID)
 	} else {
 		ws.WriteMessage(websocket.TextMessage, []byte("Invalid channel"))
 		return
@@ -82,6 +85,30 @@ func handlePostConnections(ws *websocket.Conn, postID string) {
 	}
 }
 
+func handleProfileConnections(ws *websocket.Conn, userID string) {
+	if _, ok := profileClients[userID]; !ok {
+		profileClients[userID] = make(map[*websocket.Conn]bool)
+	}
+	profileClients[userID][ws] = true
+	defer func() {
+		delete(profileClients[userID], ws)
+		if len(profileClients[userID]) == 0 {
+			delete(profileClients, userID)
+		}
+		ws.Close()
+	}()
+	log.Printf("Client connected to profile %s", userID)
+
+	// Keep connection alive
+	for {
+		_, _, err := ws.ReadMessage()
+		if err != nil {
+			log.Printf("Profile %s connection error: %v", userID, err)
+			break
+		}
+	}
+}
+
 func HandleMessages() {
 	for {
 		select {
@@ -110,6 +137,18 @@ func HandleMessages() {
 					}
 				}
 			}
+			// Broadcasr to profile-specific clients
+			if profileClients, ok := profileClients[strconv.Itoa(int(post.UserID))]; ok {
+				for client := range profileClients {
+					err := client.WriteJSON(postData)
+					if err != nil {
+						log.Println("Error writing to profile client:", err)
+						client.Close()
+						delete(profileClients, client)
+					}
+				}
+			}
+
 		case comment := <-channels.CommentBroadcast:
 			commentData := controllers.CommentData{
 				Comment: comment,
@@ -122,6 +161,21 @@ func HandleMessages() {
 						log.Println("Error writing to post client:", err)
 						client.Close()
 						delete(postClients, client)
+					}
+				}
+			}
+		case profile := <-channels.ProfileBroadcast:
+			profileData := controllers.ProfileData{
+				Profile: profile,
+			}
+
+			if profileClients, ok := profileClients[strconv.Itoa(int(profile.ID))]; ok {
+				for client := range profileClients {
+					err := client.WriteJSON(profileData)
+					if err != nil {
+						log.Println("Error writing to profile client:", err)
+						client.Close()
+						delete(profileClients, client)
 					}
 				}
 			}

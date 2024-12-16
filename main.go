@@ -6,6 +6,7 @@ import (
 	"aso/asofi/middlewares"
 	"aso/asofi/models"
 	"aso/asofi/websocket"
+	"log"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -17,6 +18,8 @@ func main() {
 	config.ConnectDB()
 
 	config.DB.AutoMigrate(&models.User{}, &models.Post{}, &models.Comment{}, &models.Like{}, &models.Session{}, &models.OTP{})
+
+	initializeDB()
 
 	r := gin.Default()
 	r.Use(cors.New(cors.Config{
@@ -43,12 +46,15 @@ func main() {
 	core.POST("/verify/verify-email", controllers.VerifyCODE)
 
 	core.POST("/posts", controllers.CreatePost)
-	core.GET("/posts/:id", controllers.GetPost)
+	noyes.GET("/posts/:id", controllers.GetPost)
 	core.DELETE("/posts/:id", controllers.DeletePost)
+	core.PUT("/posts/:id", controllers.UpdatePost)
 	core.POST("/posts/like", controllers.LikePost)
 	core.POST("/posts/unlike", controllers.UnlikePost)
 	core.POST("/posts/:id/comments", controllers.CreateComment)
-	core.GET("/posts/:id/comments", controllers.GetComments)
+	core.DELETE("/posts/comments/:commentID", controllers.DeleteComment)
+	core.PUT("/posts/comments/:commentID", controllers.UpdateComment)
+	noyes.GET("/posts/:id/comments", controllers.GetComments)
 	noyes.GET("/posts", controllers.ListPosts)
 
 	me := core.Group("/me")
@@ -60,4 +66,16 @@ func main() {
 	go websocket.HandleMessages()
 
 	r.Run(":2425")
+}
+
+func initializeDB() {
+	roles := []string{"User", "Moderator", "Admin"}
+	for _, roleName := range roles {
+		var role models.Role
+		if err := config.DB.Where("name = ?", roleName).First(&role).Error; err != nil {
+			if err := config.DB.Create(&models.Role{Name: roleName}).Error; err != nil {
+				log.Fatalf("Failed to create role %s: %v", roleName, err)
+			}
+		}
+	}
 }

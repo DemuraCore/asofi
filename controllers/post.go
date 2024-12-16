@@ -318,6 +318,39 @@ func GetPost(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": postData})
 }
 
+func UpdatePost(c *gin.Context) {
+	postID := c.Param("id")
+	userID := int(c.MustGet("user_id").(float64))
+
+	var post models.Post
+	if err := config.DB.Preload("User").Where("id = ? AND user_id = ?", postID, userID).First(&post).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Post not found or you are not authorized to update this post"})
+		return
+	}
+
+	var req models.Post
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	if req.Content == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Content is required"})
+		return
+	}
+
+	if err := config.DB.Model(&post).Updates(&req).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error updating post"})
+		return
+	}
+
+	go func() {
+		channels.FeedBroadcast <- post
+	}()
+
+	c.JSON(http.StatusOK, gin.H{"data": post})
+}
+
 type CommentRequest struct {
 	Content string `json:"content" binding:"required"`
 }
@@ -378,7 +411,7 @@ func CreateComment(c *gin.Context) {
 }
 
 func DeleteComment(c *gin.Context) {
-	commentID := c.Param("id")
+	commentID := c.Param("commentID")
 	userID := int(c.MustGet("user_id").(float64))
 
 	var comment models.Comment
@@ -388,7 +421,7 @@ func DeleteComment(c *gin.Context) {
 	}
 
 	var post models.Post
-	if err := config.DB.Where("id = ?", comment.PostID).First(&post).Error; err != nil {
+	if err := config.DB.Preload("User").Where("id = ?", comment.PostID).First(&post).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to fetch post"})
 		return
 	}
@@ -410,10 +443,47 @@ func DeleteComment(c *gin.Context) {
 		return
 	}
 	go func() {
-		channels.PostBroadcast <- post
+		channels.FeedBroadcast <- post
+		comment.UserID = 0
+		channels.CommentBroadcast <- comment
 	}()
 
 	c.JSON(http.StatusOK, gin.H{"message": "Comment deleted successfully"})
+}
+
+func UpdateComment(c *gin.Context) {
+	commentID := c.Param("commentID")
+	userID := int(c.MustGet("user_id").(float64))
+
+	var comment models.Comment
+	if err := config.DB.Preload("User").Where("id = ? AND user_id = ?", commentID, userID).First(&comment).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Comment not found or you are not authorized to update this comment"})
+		return
+	}
+
+	var req CommentRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	if req.Content == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Content is required"})
+		return
+	}
+
+	comment.Content = req.Content
+
+	if err := config.DB.Save(&comment).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error updating comment"})
+		return
+	}
+
+	go func() {
+		channels.CommentBroadcast <- comment
+	}()
+
+	c.JSON(http.StatusOK, gin.H{"data": comment})
 }
 
 func GetComments(c *gin.Context) {
