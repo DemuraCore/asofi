@@ -58,7 +58,7 @@ type Comment struct {
 	Content   string `gorm:"not null"`
 	UserID    uint   `gorm:"not null"`
 	PostID    uint   `gorm:"not null"`
-	User      User
+	User      User   `gorm:"foreignKey:UserID"`
 	Post      Post
 	CreatedAt time.Time
 	UpdatedAt time.Time

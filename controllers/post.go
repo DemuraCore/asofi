@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 func DeletePost(c *gin.Context) {
@@ -25,30 +26,37 @@ func DeletePost(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error deleting post"})
 		return
 	}
-
-	channels.FeedBroadcast <- models.Post{ID: post.ID} // Notify feed channel of deletion
-	channels.PostBroadcast <- models.Post{ID: post.ID} // Notify post-specific channel
-
+	go func() {
+		channels.FeedBroadcast <- models.Post{ID: post.ID}
+	}()
 	c.JSON(http.StatusOK, gin.H{"message": "Post deleted successfully"})
 }
 
 func CreatePost(c *gin.Context) {
 	var post models.Post
+
+	// Validate incoming JSON
 	if err := c.ShouldBindJSON(&post); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input: " + err.Error()})
 		return
 	}
 
+	// Check content
 	if post.Content == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Content is required"})
 		return
 	}
 
-	userID := int(c.MustGet("user_id").(float64))
+	// Get user ID from context
+	userID, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
 
-	// Check if the user is verified
+	// Fetch user and validate verification status
 	var user models.User
-	if err := config.DB.First(&user, userID).Error; err != nil {
+	if err := config.DB.Select("id, verified").Where("id = ?", userID).First(&user).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to fetch user"})
 		return
 	}
@@ -58,16 +66,27 @@ func CreatePost(c *gin.Context) {
 		return
 	}
 
-	post.UserID = uint(userID)
+	// Assign user ID to the post
+	post.UserID = uint(userID.(float64))
 
+	// Create post in the database
 	if err := config.DB.Create(&post).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to create post"})
 		return
 	}
-	config.DB.Preload("User").First(&post, post.ID)
 
-	channels.FeedBroadcast <- post // Feed channel
+	// Fetch the created post with associated User (if necessary)
+	if err := config.DB.Preload("User").First(&post, post.ID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error fetching created post"})
+		return
+	}
 
+	// Broadcast post creation asynchronously
+	go func() {
+		channels.FeedBroadcast <- post
+	}()
+
+	// Respond with the created post
 	c.JSON(http.StatusCreated, gin.H{"data": post})
 }
 
@@ -78,72 +97,137 @@ type PostIDRequest struct {
 func LikePost(c *gin.Context) {
 	var req PostIDRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		RespondWithError(c, http.StatusBadRequest, "Invalid request")
 		return
 	}
 
-	userID := int(c.MustGet("user_id").(float64))
+	userID := uint(c.MustGet("user_id").(float64))
 
+	// Check if the post exists
 	var post models.Post
+	if err := config.DB.Where("id = ?", req.PostID).First(&post).Error; err != nil {
+		RespondWithError(c, http.StatusNotFound, "Post not found")
+		return
+	}
+
+	// Check if the like already exists
+	var likeExists bool
+	if err := config.DB.Model(&models.Like{}).
+		Select("count(1) > 0").
+		Where("post_id = ? AND user_id = ?", req.PostID, userID).
+		Find(&likeExists).Error; err == nil && likeExists {
+		RespondWithError(c, http.StatusBadRequest, "You have already liked this post")
+		return
+	}
+
+	// Create a like and update the like count in a transaction
+	err := config.DB.Transaction(func(tx *gorm.DB) error {
+		// Create the like entry
+		like := models.Like{
+			PostID: req.PostID,
+			UserID: userID,
+		}
+		if err := tx.Create(&like).Error; err != nil {
+			return err
+		}
+
+		// Increment the like count
+		if err := tx.Model(&models.Post{}).
+			Where("id = ?", req.PostID).
+			UpdateColumn("like_count", gorm.Expr("like_count + 1")).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		RespondWithError(c, http.StatusInternalServerError, "Transaction failed")
+		return
+	}
+
+	// Fetch the full post data for broadcasting
 	if err := config.DB.Preload("User").Where("id = ?", req.PostID).First(&post).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Post not found"})
+		RespondWithError(c, http.StatusInternalServerError, "Failed to fetch full post data for broadcasting")
 		return
 	}
 
-	var like models.Like
-	if err := config.DB.Where("post_id = ? AND user_id = ?", req.PostID, userID).First(&like).Error; err == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "You have already liked this post"})
-		return
-	}
-
-	like = models.Like{
-		PostID: post.ID,
-		UserID: uint(userID),
-	}
-
-	if err := config.DB.Create(&like).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error liking post"})
-		return
-	}
-
-	post.LikeCount++
-	config.DB.Save(&post)
-
-	channels.FeedBroadcast <- post
+	// Broadcast asynchronously
+	go func() {
+		channels.FeedBroadcast <- post
+	}()
 
 	c.JSON(http.StatusOK, gin.H{"message": "Post liked successfully"})
+}
+
+// Reusable error response helper
+func RespondWithError(c *gin.Context, code int, message string) {
+	c.JSON(code, gin.H{"error": message})
+	c.Abort()
 }
 
 func UnlikePost(c *gin.Context) {
 	var req PostIDRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		RespondWithError(c, http.StatusBadRequest, "Invalid request")
 		return
 	}
 
-	userID := int(c.MustGet("user_id").(float64))
+	userID := uint(c.MustGet("user_id").(float64))
 
+	// Check if the post exists
+	var postExists bool
+	if err := config.DB.Model(&models.Post{}).
+		Select("count(1) > 0").
+		Where("id = ?", req.PostID).
+		Find(&postExists).Error; err != nil || !postExists {
+		RespondWithError(c, http.StatusNotFound, "Post not found")
+		return
+	}
+
+	// Check if the like exists
+	var likeExists bool
+	if err := config.DB.Model(&models.Like{}).
+		Select("count(1) > 0").
+		Where("post_id = ? AND user_id = ?", req.PostID, userID).
+		Find(&likeExists).Error; err != nil || !likeExists {
+		RespondWithError(c, http.StatusBadRequest, "You have not liked this post")
+		return
+	}
+
+	// Remove like and decrement like count in a transaction
+	err := config.DB.Transaction(func(tx *gorm.DB) error {
+		// Delete the like entry
+		if err := tx.Where("post_id = ? AND user_id = ?", req.PostID, userID).Delete(&models.Like{}).Error; err != nil {
+			return err
+		}
+
+		// Decrement the like count
+		if err := tx.Model(&models.Post{}).
+			Where("id = ?", req.PostID).
+			UpdateColumn("like_count", gorm.Expr("like_count - 1")).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		RespondWithError(c, http.StatusInternalServerError, "Transaction failed")
+		return
+	}
+
+	// Fetch full post data for broadcasting
 	var post models.Post
-	if err := config.DB.Where("id = ?", req.PostID).Preload("User").First(&post).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Post not found"})
+	if err := config.DB.Preload("User").Where("id = ?", req.PostID).First(&post).Error; err != nil {
+		RespondWithError(c, http.StatusInternalServerError, "Failed to fetch full post data for broadcasting")
 		return
 	}
 
-	var like models.Like
-	if err := config.DB.Where("post_id = ? AND user_id = ?", req.PostID, userID).First(&like).Error; err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "You have not liked this post"})
-		return
-	}
-
-	if err := config.DB.Delete(&like).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error unliking post"})
-		return
-	}
-
-	post.LikeCount--
-	config.DB.Save(&post)
-
-	channels.FeedBroadcast <- post
+	// Broadcast asynchronously
+	go func() {
+		channels.FeedBroadcast <- post
+	}()
 
 	c.JSON(http.StatusOK, gin.H{"message": "Post unliked successfully"})
 }
@@ -158,49 +242,77 @@ func ListPosts(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
 	offset := (page - 1) * limit
 
+	userID, userExists := c.Get("user_id")
+
+	// Fetch posts with pagination
 	var posts []models.Post
 	if err := config.DB.Preload("User").Order("created_at desc").Limit(limit).Offset(offset).Find(&posts).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	userID, exists := c.Get("user_id")
 	var postDataList []PostData
-	for _, post := range posts {
-		postData := PostData{
-			Post: post,
+
+	if userExists {
+		userUintID := uint(userID.(float64))
+
+		// Fetch all liked posts by the user in a single query
+		var likedPostIDs []uint
+		if err := config.DB.Model(&models.Like{}).
+			Where("user_id = ? AND post_id IN ?", userUintID, getPostIDs(posts)).
+			Pluck("post_id", &likedPostIDs).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
 		}
-		if exists {
-			postData.IsLiked = IsPostLikedByUser(post.ID, uint(userID.(float64)))
+
+		likedPostMap := createPostIDMap(likedPostIDs)
+
+		// Construct the post data list
+		for _, post := range posts {
+			postDataList = append(postDataList, PostData{
+				Post:    post,
+				IsLiked: likedPostMap[post.ID], // Check if post is liked using the map
+			})
 		}
-		postDataList = append(postDataList, postData)
+	} else {
+		// If user not logged in, just construct post data without `IsLiked`
+		for _, post := range posts {
+			postDataList = append(postDataList, PostData{Post: post})
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"data": postDataList})
 }
 
-func IsPostLikedByUser(postID uint, userID uint) bool {
-	var like models.Like
-	if err := config.DB.Where("post_id = ? AND user_id = ?", postID, userID).First(&like).Error; err != nil {
-		return false
-	}
-	return true
-}
-
 func GetPost(c *gin.Context) {
 	postID := c.Param("id")
 
-	var post models.Post
-	if err := config.DB.Preload("User").Where("id = ?", postID).First(&post).Error; err != nil {
+	userID, userExists := c.Get("user_id")
+	userUintID := uint(0)
+	if userExists {
+		userUintID = uint(userID.(float64))
+	}
+
+	// Query post and include `is_liked` in the result if the user exists
+	var result struct {
+		models.Post
+		IsLiked bool `gorm:"column:is_liked"`
+	}
+
+	query := config.DB.Table("posts").
+		Select("posts.*, EXISTS(SELECT 1 FROM likes WHERE likes.post_id = posts.id AND likes.user_id = ?) AS is_liked", userUintID).
+		Where("posts.id = ?", postID).
+		Preload("User")
+
+	if err := query.First(&result).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Post not found"})
 		return
 	}
 
-	userID, exists := c.Get("user_id")
-	var postData PostData
-	postData.Post = post
-	if exists {
-		postData.IsLiked = IsPostLikedByUser(post.ID, uint(userID.(float64)))
+	// Construct PostData response
+	postData := PostData{
+		Post:    result.Post,
+		IsLiked: result.IsLiked,
 	}
 
 	c.JSON(http.StatusOK, gin.H{"data": postData})
@@ -235,15 +347,31 @@ func CreateComment(c *gin.Context) {
 		UserID:  uint(userID),
 		PostID:  post.ID,
 	}
-	if err := config.DB.Create(&comment).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to create comment"})
+
+	err := config.DB.Transaction(func(tx *gorm.DB) error {
+
+		if err := tx.Create(&comment).Error; err != nil {
+			return err
+		}
+
+		if err := tx.Preload("User").First(&comment, comment.ID).Error; err != nil {
+			return err
+		}
+
+		post.CommentCount++
+		if err := tx.Save(&post).Error; err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Transaction failed"})
 		return
 	}
-
-	post.CommentCount++
-	config.DB.Save(&post)
-
-	channels.FeedBroadcast <- post
+	go func() {
+		channels.FeedBroadcast <- post
+		channels.CommentBroadcast <- comment
+	}()
 
 	c.JSON(http.StatusCreated, gin.H{"data": comment})
 
@@ -264,16 +392,26 @@ func DeleteComment(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to fetch post"})
 		return
 	}
+	err := config.DB.Transaction(func(tx *gorm.DB) error {
 
-	if err := config.DB.Delete(&comment).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error deleting comment"})
+		if err := tx.Delete(&comment).Error; err != nil {
+			return err
+		}
+
+		post.CommentCount--
+		if err := tx.Save(&post).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Transaction failed"})
 		return
 	}
-
-	post.CommentCount--
-	config.DB.Save(&post)
-
-	channels.PostBroadcast <- post
+	go func() {
+		channels.PostBroadcast <- post
+	}()
 
 	c.JSON(http.StatusOK, gin.H{"message": "Comment deleted successfully"})
 }
@@ -291,10 +429,26 @@ func GetComments(c *gin.Context) {
 	}
 
 	var comments []models.Comment
-	if err := config.DB.Where("post_id = ?", postID).Order("created_at desc").Limit(limit).Offset(offset).Find(&comments).Error; err != nil {
+	if err := config.DB.Preload("User").Where("post_id = ?", postID).Order("created_at desc").Limit(limit).Offset(offset).Find(&comments).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"data": comments})
+}
+
+func getPostIDs(posts []models.Post) []uint {
+	postIDs := make([]uint, len(posts))
+	for i, post := range posts {
+		postIDs[i] = post.ID
+	}
+	return postIDs
+}
+
+func createPostIDMap(postIDs []uint) map[uint]bool {
+	postMap := make(map[uint]bool, len(postIDs))
+	for _, id := range postIDs {
+		postMap[id] = true
+	}
+	return postMap
 }
