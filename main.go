@@ -11,13 +11,16 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
+	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 func main() {
 	godotenv.Load()
 	config.ConnectDB()
+	// config.DB.Migrator().DropTable(&models.Post{}, &models.Comment{}, &models.Like{}, &models.Session{}, &models.OTP{}, &models.Role{}, &models.UserFollow{}, &models.Report{})
 
-	config.DB.AutoMigrate(&models.User{}, &models.Post{}, &models.Comment{}, &models.Like{}, &models.Session{}, &models.OTP{})
+	config.DB.AutoMigrate(&models.User{}, &models.Post{}, &models.Comment{}, &models.Like{}, &models.Session{}, &models.OTP{}, &models.Role{}, &models.UserFollow{}, &models.Report{})
 
 	initializeDB()
 
@@ -47,6 +50,7 @@ func main() {
 
 	core.POST("/posts", controllers.CreatePost)
 	noyes.GET("/posts/:id", controllers.GetPost)
+	noyes.GET("/posts/user/:username", controllers.GetPostByUser)
 	core.DELETE("/posts/:id", controllers.DeletePost)
 	core.PUT("/posts/:id", controllers.UpdatePost)
 	core.POST("/posts/like", controllers.LikePost)
@@ -76,6 +80,37 @@ func initializeDB() {
 			if err := config.DB.Create(&models.Role{Name: roleName}).Error; err != nil {
 				log.Fatalf("Failed to create role %s: %v", roleName, err)
 			}
+		}
+	}
+
+	// Create admin user
+	var adminRole models.Role
+	if err := config.DB.Where("name = ?", "Admin").First(&adminRole).Error; err != nil {
+		log.Fatalf("Failed to find role Admin: %v", err)
+	}
+
+	var adminUser models.User
+	if err := config.DB.Where("username = ?", "admin").First(&adminUser).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			hashedPassword, err := bcrypt.GenerateFromPassword([]byte("admin"), bcrypt.DefaultCost)
+			if err != nil {
+				log.Fatalf("Failed to hash password: %v", err)
+			}
+
+			adminUser = models.User{
+				Username: "admin",
+				Name:     "Admin User",
+				Verified: true,
+				Email:    "admin@example.com",
+				Password: string(hashedPassword),
+				RoleID:   adminRole.ID,
+			}
+
+			if err := config.DB.Create(&adminUser).Error; err != nil {
+				log.Fatalf("Failed to create admin user: %v", err)
+			}
+		} else {
+			log.Fatalf("Failed to find admin user: %v", err)
 		}
 	}
 }

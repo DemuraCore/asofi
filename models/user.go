@@ -11,8 +11,9 @@ type User struct {
 	ID             uint      `gorm:"primaryKey"`
 	Username       string    `gorm:"unique;null"`
 	Name           string    `gorm:"not null"`
-	Email          string    `gorm:"unique;not null"`
+	Email          string    `gorm:"unique;not null" `
 	Password       string    `gorm:"not null" json:"-"`
+	Bio            string    `gorm:"default:Hello, I'm using Aso!"`
 	IsPrivate      bool      `gorm:"default:false"`
 	Avatar         string    `gorm:"default:default.jpg"`
 	Verified       bool      `gorm:"default:false"`
@@ -28,6 +29,14 @@ type User struct {
 	Role           Role
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+}
+
+type UserFollow struct {
+	ID         uint `gorm:"primaryKey"`
+	FollowerID uint `gorm:"not null;uniqueIndex:idx_follower_followed"`
+	FollowedID uint `gorm:"not null;uniqueIndex:idx_follower_followed"`
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 type Post struct {
 	gorm.Model
@@ -45,10 +54,9 @@ type Post struct {
 }
 
 type Like struct {
-	gorm.Model
 	ID        uint `gorm:"primaryKey"`
-	UserID    uint `gorm:"not null"`
-	PostID    uint `gorm:"not null"`
+	UserID    uint `gorm:"not null;uniqueIndex:idx_user_post"`
+	PostID    uint `gorm:"not null;uniqueIndex:idx_user_post"`
 	Post      Post `gorm:"foreignKey:PostID"`
 	User      User `gorm:"foreignKey:UserID"`
 	CreatedAt time.Time

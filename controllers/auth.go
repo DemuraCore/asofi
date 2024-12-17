@@ -5,6 +5,7 @@ import (
 	"aso/asofi/models"
 	"aso/asofi/utils"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -27,6 +28,9 @@ func Register(c *gin.Context) {
 	}
 
 	var user models.User
+
+	// Remove spaces from username
+	input.Username = strings.ReplaceAll(input.Username, " ", "")
 
 	if err := config.DB.Where("email = ?", input.Email).First(&user).Error; err == nil {
 		c.JSON(http.StatusBadRequest, gin.H{
