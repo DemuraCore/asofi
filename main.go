@@ -18,9 +18,10 @@ import (
 func main() {
 	godotenv.Load()
 	config.ConnectDB()
+	config.InitRedis()
 	// config.DB.Migrator().DropTable(&models.Post{}, &models.Comment{}, &models.Like{}, &models.Session{}, &models.OTP{}, &models.Role{}, &models.UserFollow{}, &models.Report{})
 
-	config.DB.AutoMigrate(&models.User{}, &models.Post{}, &models.Comment{}, &models.Like{}, &models.Session{}, &models.OTP{}, &models.Role{}, &models.UserFollow{}, &models.Report{})
+	// config.DB.AutoMigrate(&models.User{}, &models.Post{}, &models.Comment{}, &models.Like{}, &models.Session{}, &models.OTP{}, &models.Role{}, &models.UserFollow{}, &models.Report{})
 
 	initializeDB()
 

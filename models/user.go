@@ -11,7 +11,7 @@ type User struct {
 	ID             uint      `gorm:"primaryKey"`
 	Username       string    `gorm:"unique;null"`
 	Name           string    `gorm:"not null"`
-	Email          string    `gorm:"unique;not null" `
+	Email          string    `gorm:"unique;not null" json:"-"`
 	Password       string    `gorm:"not null" json:"-"`
 	Bio            string    `gorm:"default:Hello, I'm using Aso!"`
 	IsPrivate      bool      `gorm:"default:false"`

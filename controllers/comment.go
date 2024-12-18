@@ -4,8 +4,12 @@ import (
 	"aso/asofi/channels"
 	"aso/asofi/config"
 	"aso/asofi/models"
+	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -35,39 +39,48 @@ func CreateComment(c *gin.Context) {
 		return
 	}
 
-	comment := models.Comment{
-		Content: req.Content,
-		UserID:  uint(userID),
-		PostID:  post.ID,
-	}
+	var comment models.Comment
 
+	// Perform the transaction
 	err := config.DB.Transaction(func(tx *gorm.DB) error {
-
+		// Insert the comment
+		comment = models.Comment{
+			Content: req.Content,
+			UserID:  uint(userID),
+			PostID:  post.ID,
+		}
 		if err := tx.Create(&comment).Error; err != nil {
 			return err
 		}
 
+		// Reload the comment with the user information
 		if err := tx.Preload("User").First(&comment, comment.ID).Error; err != nil {
 			return err
 		}
 
-		post.CommentCount++
-		if err := tx.Save(&post).Error; err != nil {
+		// Update the comment_count in the posts table
+		if err := tx.Model(&post).UpdateColumn("comment_count", gorm.Expr("comment_count + 1")).Error; err != nil {
 			return err
 		}
+
 		return nil
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Transaction failed"})
 		return
 	}
+
+	// Respond to the client immediately
+	c.JSON(http.StatusCreated, gin.H{"data": comment})
+
+	// Perform background tasks asynchronously
 	go func() {
 		channels.FeedBroadcast <- post
 		channels.CommentBroadcast <- comment
+
+		InvalidateCommentsCache(post.ID)
+		PreloadCommentsCache(post.ID, 1) // Preload page 1 cache after invalidation
 	}()
-
-	c.JSON(http.StatusCreated, gin.H{"data": comment})
-
 }
 
 func DeleteComment(c *gin.Context) {
@@ -91,8 +104,7 @@ func DeleteComment(c *gin.Context) {
 			return err
 		}
 
-		post.CommentCount--
-		if err := tx.Save(&post).Error; err != nil {
+		if err := tx.Model(&post).UpdateColumn("comment_count", gorm.Expr("comment_count - ?", 1)).Error; err != nil {
 			return err
 		}
 
@@ -106,6 +118,8 @@ func DeleteComment(c *gin.Context) {
 		channels.FeedBroadcast <- post
 		comment.UserID = 0
 		channels.CommentBroadcast <- comment
+		InvalidateCommentsCache(comment.PostID)
+		PreloadCommentsCache(comment.PostID, 1) // Preload page 1 cache after invalidation
 	}()
 
 	c.JSON(http.StatusOK, gin.H{"message": "Comment deleted successfully"})
@@ -138,12 +152,13 @@ func UpdateComment(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error updating comment"})
 		return
 	}
-
+	c.JSON(http.StatusOK, gin.H{"data": comment})
 	go func() {
 		channels.CommentBroadcast <- comment
+		InvalidateCommentsCache(comment.PostID)
+		PreloadCommentsCache(comment.PostID, 1) // Preload page 1 cache after invalidation
 	}()
 
-	c.JSON(http.StatusOK, gin.H{"data": comment})
 }
 
 func GetComments(c *gin.Context) {
@@ -151,18 +166,63 @@ func GetComments(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
 	offset := (page - 1) * limit
+	cacheKey := fmt.Sprintf("post:%s:comments:page:%d", postID, page)
 
+	// Attempt to retrieve cached comments
+	if cachedComments, err := config.GetCache(cacheKey); err == nil && cachedComments != "" {
+		var comments []models.Comment
+		if err := json.Unmarshal([]byte(cachedComments), &comments); err == nil {
+			c.JSON(http.StatusOK, gin.H{"data": comments})
+			return
+		}
+	}
+
+	// Fetch post and validate existence
 	var post models.Post
 	if err := config.DB.Where("id = ?", postID).First(&post).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Post not found"})
 		return
 	}
 
+	// Fetch comments from the database
 	var comments []models.Comment
-	if err := config.DB.Preload("User").Where("post_id = ?", postID).Order("created_at desc").Limit(limit).Offset(offset).Find(&comments).Error; err != nil {
+	if err := config.DB.Preload("User").Where("post_id = ?", postID).
+		Order("created_at desc").Limit(limit).Offset(offset).Find(&comments).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
+	// Cache comments for faster future access
+	if cacheData, err := json.Marshal(comments); err == nil {
+		_ = config.SetCache(cacheKey, cacheData, 5*time.Minute)
+	}
+
 	c.JSON(http.StatusOK, gin.H{"data": comments})
+}
+
+// Invalidate cache for all pages of the post
+func InvalidateCommentsCache(postID uint) {
+	prefix := fmt.Sprintf("post:%d:comments:page:", postID)
+	iter := config.RedisClient.Scan(config.RedisCtx, 0, prefix+"*", 0).Iterator()
+	for iter.Next(config.RedisCtx) {
+		config.RedisClient.Del(config.RedisCtx, iter.Val())
+	}
+	if err := iter.Err(); err != nil {
+		log.Printf("Error invalidating cache: %v", err)
+	}
+}
+
+// Preload cache for a specific page of comments
+func PreloadCommentsCache(postID uint, page int) {
+	limit := 10
+	offset := (page - 1) * limit
+	cacheKey := fmt.Sprintf("post:%d:comments:page:%d", postID, page)
+
+	var comments []models.Comment
+	if err := config.DB.Preload("User").Where("post_id = ?", postID).
+		Order("created_at desc").Limit(limit).Offset(offset).Find(&comments).Error; err == nil {
+		if cacheData, err := json.Marshal(comments); err == nil {
+			_ = config.SetCache(cacheKey, cacheData, 5*time.Minute)
+		}
+	}
 }

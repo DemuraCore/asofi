@@ -176,7 +176,6 @@ func UnlikePost(c *gin.Context) {
 		return
 	}
 
-	// Remove like and ensure non-negative like_count in a transaction
 	err := config.DB.Transaction(func(tx *gorm.DB) error {
 		// Attempt to delete the like
 		res := tx.Where("post_id = ? AND user_id = ?", req.PostID, userID).Delete(&models.Like{})
