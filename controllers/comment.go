@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -194,7 +193,7 @@ func GetComments(c *gin.Context) {
 
 	// Cache comments for faster future access
 	if cacheData, err := json.Marshal(comments); err == nil {
-		_ = config.SetCache(cacheKey, cacheData, 5*time.Minute)
+		_ = config.SetCache(cacheKey, cacheData, 0)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"data": comments})
@@ -222,7 +221,7 @@ func PreloadCommentsCache(postID uint, page int) {
 	if err := config.DB.Preload("User").Where("post_id = ?", postID).
 		Order("created_at desc").Limit(limit).Offset(offset).Find(&comments).Error; err == nil {
 		if cacheData, err := json.Marshal(comments); err == nil {
-			_ = config.SetCache(cacheKey, cacheData, 5*time.Minute)
+			_ = config.SetCache(cacheKey, cacheData, 0)
 		}
 	}
 }
