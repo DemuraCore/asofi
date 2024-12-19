@@ -45,10 +45,13 @@ var RedisClient *redis.Client
 var RedisCtx = context.Background()
 
 func InitRedis() {
+	addr := os.Getenv("REDIS_ADDR")
+	password := os.Getenv("REDIS_PASSWORD")
+
 	RedisClient = redis.NewClient(&redis.Options{
-		Addr:     "194.15.36.47:1432", // Redis server address
-		Password: "min2kota",          // No password by default
-		DB:       0,                   // Use default DB
+		Addr:     addr,     // Redis server address
+		Password: password, // Redis password
+		DB:       0,        // Use default DB
 	})
 
 	// Test connection
