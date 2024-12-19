@@ -168,8 +168,10 @@ func UpdateComment(c *gin.Context) {
 func GetComments(c *gin.Context) {
 	postID := c.Param("id")
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	limit := 10
+	offset := (page - 1) * limit
 
-	cacheKey := fmt.Sprintf("post:%d:comments:page:%d", postID, page)
+	cacheKey := fmt.Sprintf("post:%s:comments:page:%d", postID, page)
 
 	// Try to get from cache
 	if cachedData, err := config.GetCache(cacheKey); err == nil && cachedData != "" {
@@ -188,7 +190,46 @@ func GetComments(c *gin.Context) {
 		}
 	}
 
-	// Rest of the existing GetComments logic...
+	// If not in cache, fetch from database
+	var totalCount int64
+	if err := config.DB.Model(&models.Comment{}).Where("post_id = ?", postID).Count(&totalCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error counting comments"})
+		return
+	}
+
+	totalPages := int(math.Ceil(float64(totalCount) / float64(limit)))
+
+	var comments []models.Comment
+	if err := config.DB.Preload("User").
+		Where("post_id = ?", postID).
+		Order("created_at desc").
+		Limit(limit).
+		Offset(offset).
+		Find(&comments).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error fetching comments"})
+		return
+	}
+
+	// Cache the result
+	result := struct {
+		Comments    []models.Comment `json:"comments"`
+		TotalPages  int              `json:"total_pages"`
+		CurrentPage int              `json:"current_page"`
+	}{
+		Comments:    comments,
+		TotalPages:  totalPages,
+		CurrentPage: page,
+	}
+
+	if cacheData, err := json.Marshal(result); err == nil {
+		_ = config.SetCache(cacheKey, cacheData, 5*time.Minute)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"data":         comments,
+		"total_pages":  totalPages,
+		"current_page": page,
+	})
 }
 
 // Invalidate cache for all pages of the post
