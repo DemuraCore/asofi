@@ -78,6 +78,7 @@ func CreateComment(c *gin.Context) {
 		channels.CommentBroadcast <- comment
 
 		InvalidateCommentsCache(post.ID)
+		InvalidatePostCache(comment.PostID)
 		PreloadCommentsCache(post.ID, 1) // Preload page 1 cache after invalidation
 	}()
 }
@@ -118,6 +119,7 @@ func DeleteComment(c *gin.Context) {
 		comment.UserID = 0
 		channels.CommentBroadcast <- comment
 		InvalidateCommentsCache(comment.PostID)
+		InvalidatePostCache(comment.PostID)
 		PreloadCommentsCache(comment.PostID, 1) // Preload page 1 cache after invalidation
 	}()
 
@@ -155,6 +157,7 @@ func UpdateComment(c *gin.Context) {
 	go func() {
 		channels.CommentBroadcast <- comment
 		InvalidateCommentsCache(comment.PostID)
+		InvalidatePostCache(comment.PostID)
 		PreloadCommentsCache(comment.PostID, 1) // Preload page 1 cache after invalidation
 	}()
 

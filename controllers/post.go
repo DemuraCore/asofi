@@ -150,6 +150,8 @@ func LikePost(c *gin.Context) {
 		return
 	}
 
+	InvalidatePostCache(req.PostID)
+
 	// Fetch the full post data for broadcasting
 	if err := config.DB.Preload("User").Where("id = ?", req.PostID).First(&post).Error; err != nil {
 		RespondWithError(c, http.StatusInternalServerError, "Failed to fetch full post data")
@@ -200,6 +202,8 @@ func UnlikePost(c *gin.Context) {
 		return
 	}
 
+	InvalidatePostCache(req.PostID)
+
 	// Fetch full post data for broadcasting
 	var post models.Post
 	if err := config.DB.Preload("User").Where("id = ?", req.PostID).First(&post).Error; err != nil {
@@ -225,8 +229,6 @@ func ListPosts(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
 	offset := (page - 1) * limit
 
-	userID, userExists := c.Get("user_id")
-
 	// Fetch posts with pagination
 	var posts []models.Post
 	if err := config.DB.Preload("User").Order("created_at desc").Limit(limit).Offset(offset).Find(&posts).Error; err != nil {
@@ -234,49 +236,32 @@ func ListPosts(c *gin.Context) {
 		return
 	}
 
-	var postDataList []PostData
-
-	if userExists {
-		userUintID := uint(userID.(float64))
-
-		// Fetch all liked posts by the user in a single query
-		var likedPostIDs []uint
-		if err := config.DB.Model(&models.Like{}).
-			Where("user_id = ? AND post_id IN ?", userUintID, getPostIDs(posts)).
-			Pluck("post_id", &likedPostIDs).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-
-		likedPostMap := createPostIDMap(likedPostIDs)
-
-		// Construct the post data list
-		for _, post := range posts {
-			postDataList = append(postDataList, PostData{
-				Post:    post,
-				IsLiked: likedPostMap[post.ID], // Check if post is liked using the map
-			})
-		}
-	} else {
-		// If user not logged in, just construct post data without `IsLiked`
-		for _, post := range posts {
-			postDataList = append(postDataList, PostData{Post: post})
-		}
-	}
-
+	// Use the shared conversion function
+	postDataList := convertPostsToPostData(posts, c)
 	c.JSON(http.StatusOK, gin.H{"data": postDataList})
 }
 
 func GetPost(c *gin.Context) {
 	postID := c.Param("id")
-
 	userID, userExists := c.Get("user_id")
 	userUintID := uint(0)
 	if userExists {
 		userUintID = uint(userID.(float64))
 	}
 
-	// Query post and include `is_liked` in the result if the user exists
+	// Generate cache key
+	cacheKey := fmt.Sprintf("post:%s:user:%d", postID, userUintID)
+
+	// Try to get from cache
+	if cachedData, err := config.GetCache(cacheKey); err == nil && cachedData != "" {
+		var postData PostData
+		if err := json.Unmarshal([]byte(cachedData), &postData); err == nil {
+			c.JSON(http.StatusOK, gin.H{"data": postData})
+			return
+		}
+	}
+
+	// Query post and include `is_liked` if user exists
 	var result struct {
 		models.Post
 		IsLiked bool `gorm:"column:is_liked"`
@@ -298,9 +283,13 @@ func GetPost(c *gin.Context) {
 		IsLiked: result.IsLiked,
 	}
 
+	// Cache the response
+	if cacheData, err := json.Marshal(postData); err == nil {
+		_ = config.SetCache(cacheKey, cacheData, 5*time.Minute)
+	}
+
 	c.JSON(http.StatusOK, gin.H{"data": postData})
 }
-
 func UpdatePost(c *gin.Context) {
 	postID := c.Param("id")
 	userID := int(c.MustGet("user_id").(float64))
@@ -327,6 +316,8 @@ func UpdatePost(c *gin.Context) {
 		return
 	}
 
+	InvalidatePostCache(post.ID)
+
 	go func() {
 		channels.FeedBroadcast <- post
 	}()
@@ -334,21 +325,40 @@ func UpdatePost(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": post})
 }
 
+type CachedPostData struct {
+	Posts   []models.Post `json:"posts"`
+	LikeMap map[uint]bool `json:"like_map"`
+}
+
+// Update GetPostByUser function
 func GetPostByUser(c *gin.Context) {
 	username := c.Param("username")
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
 	offset := (page - 1) * limit
 
-	// Generate cache key based on username and pagination
-	cacheKey := fmt.Sprintf("user_posts:%s:page:%d:limit:%d", username, page, limit)
+	// Get user ID if logged in
+	userID, userExists := c.Get("user_id")
+	var userUintID uint
+	if userExists {
+		userUintID = uint(userID.(float64))
+	}
+
+	// Generate cache key including user ID for likes
+	cacheKey := fmt.Sprintf("user_posts:%s:page:%d:limit:%d:user:%d", username, page, limit, userUintID)
 
 	// Try to get from cache first
 	if cachedData, err := config.GetCache(cacheKey); err == nil && cachedData != "" {
-		var posts []models.Post
-		if err := json.Unmarshal([]byte(cachedData), &posts); err == nil {
-			// Convert posts to postDataList, handling logged-in user status
-			postDataList := convertPostsToPostData(posts, c)
+		var cached CachedPostData
+		if err := json.Unmarshal([]byte(cachedData), &cached); err == nil {
+			// Convert cached data to response format
+			var postDataList []PostData
+			for _, post := range cached.Posts {
+				postDataList = append(postDataList, PostData{
+					Post:    post,
+					IsLiked: cached.LikeMap[post.ID],
+				})
+			}
 			c.JSON(http.StatusOK, gin.H{"data": postDataList})
 			return
 		}
@@ -372,13 +382,37 @@ func GetPostByUser(c *gin.Context) {
 		return
 	}
 
-	// Cache the posts
-	if cacheData, err := json.Marshal(posts); err == nil {
-		_ = config.SetCache(cacheKey, cacheData, 5*time.Minute) // Cache for 5 minutes
+	// Get likes information
+	likeMap := make(map[uint]bool)
+	if userExists {
+		var likedPostIDs []uint
+		if err := config.DB.Model(&models.Like{}).
+			Where("user_id = ? AND post_id IN ?", userUintID, getPostIDs(posts)).
+			Pluck("post_id", &likedPostIDs).Error; err == nil {
+			likeMap = createPostIDMap(likedPostIDs)
+		}
 	}
 
-	// Convert posts to postDataList, handling logged-in user status
-	postDataList := convertPostsToPostData(posts, c)
+	// Create cache object
+	cached := CachedPostData{
+		Posts:   posts,
+		LikeMap: likeMap,
+	}
+
+	// Cache the data
+	if cacheData, err := json.Marshal(cached); err == nil {
+		_ = config.SetCache(cacheKey, cacheData, 5*time.Minute)
+	}
+
+	// Convert to response format
+	var postDataList []PostData
+	for _, post := range posts {
+		postDataList = append(postDataList, PostData{
+			Post:    post,
+			IsLiked: likeMap[post.ID],
+		})
+	}
+
 	c.JSON(http.StatusOK, gin.H{"data": postDataList})
 }
 
@@ -424,4 +458,18 @@ func convertPostsToPostData(posts []models.Post, c *gin.Context) []PostData {
 		postDataList = append(postDataList, PostData{Post: post})
 	}
 	return postDataList
+}
+
+func InvalidatePostCache(postID uint) {
+	// Invalidate single post cache for all users
+	iter := config.RedisClient.Scan(config.RedisCtx, 0, fmt.Sprintf("post:%d:user:*", postID), 0).Iterator()
+	for iter.Next(config.RedisCtx) {
+		config.RedisClient.Del(config.RedisCtx, iter.Val())
+	}
+
+	// Invalidate user posts cache
+	userIter := config.RedisClient.Scan(config.RedisCtx, 0, "user_posts:*", 0).Iterator()
+	for userIter.Next(config.RedisCtx) {
+		config.RedisClient.Del(config.RedisCtx, userIter.Val())
+	}
 }
