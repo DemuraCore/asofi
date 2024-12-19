@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -16,6 +17,11 @@ var upgrader = websocket.Upgrader{
 		return true
 	},
 }
+
+const (
+	MaxConnectionsPerUser = 3
+	HeartbeatInterval     = 30 * time.Second
+)
 
 var (
 	clients        = make(map[*websocket.Conn]bool)            // Feed clients

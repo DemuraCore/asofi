@@ -30,6 +30,9 @@ func DeletePost(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error deleting post"})
 		return
 	}
+	InvalidatePostCache(post.ID)
+	InvalidateUserPostsCache(post.UserID)
+
 	go func() {
 		channels.FeedBroadcast <- models.Post{ID: post.ID, UserID: post.UserID}
 	}()
@@ -84,6 +87,8 @@ func CreatePost(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error fetching created post"})
 		return
 	}
+
+	InvalidateUserPostsCache(post.UserID)
 
 	// Broadcast post creation asynchronously
 	go func() {
@@ -471,5 +476,12 @@ func InvalidatePostCache(postID uint) {
 	userIter := config.RedisClient.Scan(config.RedisCtx, 0, "user_posts:*", 0).Iterator()
 	for userIter.Next(config.RedisCtx) {
 		config.RedisClient.Del(config.RedisCtx, userIter.Val())
+	}
+}
+
+func InvalidateUserPostsCache(userID uint) {
+	iter := config.RedisClient.Scan(config.RedisCtx, 0, fmt.Sprintf("user_posts:*:user:%d", userID), 0).Iterator()
+	for iter.Next(config.RedisCtx) {
+		config.RedisClient.Del(config.RedisCtx, iter.Val())
 	}
 }

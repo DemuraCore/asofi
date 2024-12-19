@@ -68,10 +68,10 @@ type Comment struct {
 	ID        uint   `gorm:"primaryKey"`
 	Content   string `gorm:"not null"`
 	UserID    uint   `gorm:"not null"`
-	PostID    uint   `gorm:"not null"`
+	PostID    uint   `gorm:"index"`
 	User      User   `gorm:"foreignKey:UserID"`
 	Post      Post
-	CreatedAt time.Time
+	CreatedAt time.Time `gorm:"index"`
 	UpdatedAt time.Time
 }
 type ReportedType string

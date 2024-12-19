@@ -44,6 +44,37 @@ func ConnectDB() {
 var RedisClient *redis.Client
 var RedisCtx = context.Background()
 
+type CacheConfig struct {
+	DefaultTTL time.Duration
+	MaxEntries int
+	MaxSize    int64
+}
+
+var DefaultCacheConfig = CacheConfig{
+	DefaultTTL: 15 * time.Minute,
+	MaxEntries: 10000,
+	MaxSize:    100 * 1024 * 1024, // 100MB
+}
+
+func initRedisCache(config CacheConfig) error {
+	// Set memory limit
+	if err := RedisClient.ConfigSet(RedisCtx, "maxmemory", fmt.Sprintf("%d", config.MaxSize)).Err(); err != nil {
+		return fmt.Errorf("failed to set maxmemory: %v", err)
+	}
+
+	// Set eviction policy
+	if err := RedisClient.ConfigSet(RedisCtx, "maxmemory-policy", "allkeys-lru").Err(); err != nil {
+		return fmt.Errorf("failed to set eviction policy: %v", err)
+	}
+
+	// Set key limits
+	if err := RedisClient.ConfigSet(RedisCtx, "maxkeys", fmt.Sprintf("%d", config.MaxEntries)).Err(); err != nil {
+		return fmt.Errorf("failed to set maxkeys: %v", err)
+	}
+
+	return nil
+}
+
 func InitRedis() {
 	addr := os.Getenv("REDIS_ADDR")
 	password := os.Getenv("REDIS_PASSWORD")
@@ -57,6 +88,9 @@ func InitRedis() {
 	// Test connection
 	if _, err := RedisClient.Ping(RedisCtx).Result(); err != nil {
 		log.Fatalf("Failed to connect to Redis: %v", err)
+	}
+	if err := initRedisCache(DefaultCacheConfig); err != nil {
+		log.Printf("Warning: Cache initialization failed: %v", err)
 	}
 	log.Println("Redis connected successfully!")
 }
