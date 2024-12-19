@@ -53,29 +53,35 @@ func Follow(c *gin.Context) {
 		return
 	}
 
-	// Check if the user to follow exists
-	var followingExists bool
-	if err := config.DB.Model(&models.User{}).
-		Select("count(1) > 0").
-		Where("id = ?", followingID).
-		Find(&followingExists).Error; err != nil || !followingExists {
+	// First check if target user exists and get their username
+	var targetUser models.User
+	if err := config.DB.Where("id = ?", followingID).First(&targetUser).Error; err != nil {
 		RespondWithError(c, http.StatusNotFound, "User to follow not found")
 		return
 	}
 
-	// Check if already following
-	var alreadyFollowing bool
-	if err := config.DB.Model(&models.UserFollow{}).
-		Select("count(1) > 0").
-		Where("follower_id = ? AND followed_id = ?", followerID, followingID).
-		Find(&alreadyFollowing).Error; err == nil && alreadyFollowing {
-		RespondWithError(c, http.StatusBadRequest, "You are already following this user")
-		return
+	// Check follow status from cache first
+	cacheKey := fmt.Sprintf("user_profile:%s", targetUser.Username)
+	if cachedData, err := config.GetCache(cacheKey); err == nil && cachedData != "" {
+		var cached CachedProfileData
+		if err := json.Unmarshal([]byte(cachedData), &cached); err == nil {
+			if cached.IsFollow[followerID] {
+				RespondWithError(c, http.StatusBadRequest, "You are already following this user")
+				return
+			}
+		}
 	}
 
 	// Create follow relationship in a transaction
 	err = config.DB.Transaction(func(tx *gorm.DB) error {
-		// Insert follow relationship
+		// Double check in DB to be safe
+		var alreadyFollowing bool
+		if err := tx.Model(&models.UserFollow{}).
+			Select("count(1) > 0").
+			Where("follower_id = ? AND followed_id = ?", followerID, followingID).
+			Find(&alreadyFollowing).Error; err == nil && alreadyFollowing {
+			return fmt.Errorf("already following")
+		}
 		follow := models.UserFollow{
 			FollowerID: followerID,
 			FollowedID: uint(followingID),
@@ -108,18 +114,24 @@ func Follow(c *gin.Context) {
 	// Broadcast to both users
 	go func() {
 		var follower, followed models.User
-
 		config.DB.First(&follower, followerID)
 		config.DB.First(&followed, followingID)
-		// Invalidate cache for both users
-		_ = config.RedisClient.Del(config.RedisCtx, fmt.Sprintf("user_profile:%s", follower.Username))
-		_ = config.RedisClient.Del(config.RedisCtx, fmt.Sprintf("user_profile:%s", followed.Username))
+
+		// Update follower cache optimistically
+		updateProfileCache(follower.Username, func(cache *CachedProfileData) {
+			cache.Profile.FollowingCount++
+			cache.Version++
+		})
+
+		// Update followed cache optimistically
+		updateProfileCache(followed.Username, func(cache *CachedProfileData) {
+			cache.Profile.FollowersCount++
+			cache.Version++
+			cache.IsFollow[followerID] = true
+		})
+
 		channels.ProfileBroadcast <- follower
 		channels.ProfileBroadcast <- followed
-
-		// Preload cache for both users
-		PreloadProfileCache(follower, 1)
-		PreloadProfileCache(followed, 1)
 	}()
 
 	c.JSON(http.StatusOK, gin.H{"message": "Successfully followed user"})
@@ -146,29 +158,33 @@ func Unfollow(c *gin.Context) {
 		return
 	}
 
-	// Check if the user to unfollow exists
-	var followingExists bool
-	if err := config.DB.Model(&models.User{}).
-		Select("count(1) > 0").
-		Where("id = ?", followingID).
-		Find(&followingExists).Error; err != nil || !followingExists {
+	// Get target user first
+	var targetUser models.User
+	if err := config.DB.Where("id = ?", followingID).First(&targetUser).Error; err != nil {
 		RespondWithError(c, http.StatusNotFound, "User to unfollow not found")
 		return
 	}
-
-	// Check if the user is currently following
-	var isFollowing bool
-	if err := config.DB.Model(&models.UserFollow{}).
-		Select("count(1) > 0").
-		Where("follower_id = ? AND followed_id = ?", followerID, followingID).
-		Find(&isFollowing).Error; err != nil || !isFollowing {
-		RespondWithError(c, http.StatusBadRequest, "You are not following this user")
-		return
+	// Check follow status from cache first
+	cacheKey := fmt.Sprintf("user_profile:%s", targetUser.Username)
+	if cachedData, err := config.GetCache(cacheKey); err == nil && cachedData != "" {
+		var cached CachedProfileData
+		if err := json.Unmarshal([]byte(cachedData), &cached); err == nil {
+			if !cached.IsFollow[followerID] {
+				RespondWithError(c, http.StatusBadRequest, "You are not following this user")
+				return
+			}
+		}
 	}
 
-	// Perform unfollow operation in a transaction
 	err = config.DB.Transaction(func(tx *gorm.DB) error {
-		// Delete the follow relationship
+		// Double check in DB to be safe
+		var isFollowing bool
+		if err := tx.Model(&models.UserFollow{}).
+			Select("count(1) > 0").
+			Where("follower_id = ? AND followed_id = ?", followerID, followingID).
+			Find(&isFollowing).Error; err != nil || !isFollowing {
+			return fmt.Errorf("not following")
+		}
 		if err := tx.Where("follower_id = ? AND followed_id = ?", followerID, followingID).
 			Delete(&models.UserFollow{}).Error; err != nil {
 			return err
@@ -197,20 +213,25 @@ func Unfollow(c *gin.Context) {
 	}
 
 	go func() {
-
 		var follower, followed models.User
-
 		config.DB.First(&follower, followerID)
 		config.DB.First(&followed, followingID)
-		// Invalidate cache for both users
-		_ = config.RedisClient.Del(config.RedisCtx, fmt.Sprintf("user_profile:%s", follower.Username))
-		_ = config.RedisClient.Del(config.RedisCtx, fmt.Sprintf("user_profile:%s", followed.Username))
+
+		// Update follower cache optimistically
+		updateProfileCache(follower.Username, func(cache *CachedProfileData) {
+			cache.Profile.FollowingCount--
+			cache.Version++
+		})
+
+		// Update followed cache optimistically
+		updateProfileCache(followed.Username, func(cache *CachedProfileData) {
+			cache.Profile.FollowersCount--
+			cache.Version++
+			cache.IsFollow[followerID] = false
+		})
+
 		channels.ProfileBroadcast <- follower
 		channels.ProfileBroadcast <- followed
-
-		// Preload cache for both users
-		PreloadProfileCache(follower, 1)
-		PreloadProfileCache(followed, 1)
 	}()
 
 	c.JSON(http.StatusOK, gin.H{"message": "Successfully unfollowed user"})
@@ -237,26 +258,22 @@ func GetUserProfile(c *gin.Context) {
 
 	cacheKey := fmt.Sprintf("user_profile:%s", username)
 	var user models.User
+	// delete cache for debugging
+	// _ = config.RedisClient.Del(config.RedisCtx, cacheKey)
 
 	// Attempt to retrieve cached user profile
-	if cachedProfile, err := config.GetCache(cacheKey); err == nil && cachedProfile != "" {
-		if err := json.Unmarshal([]byte(cachedProfile), &user); err == nil {
-			// Check follow status separately if logged in
-			var isFollow bool
+	if cachedData, err := config.GetCache(cacheKey); err == nil && cachedData != "" {
+		var cached CachedProfileData
+		if err := json.Unmarshal([]byte(cachedData), &cached); err == nil {
+			isFollow := false
 			if loggedIn {
-				err := config.DB.Model(&models.UserFollow{}).
-					Select("count(1) > 0").
-					Where("follower_id = ? AND followed_id = ?", uint(requesterID.(float64)), user.ID).
-					Find(&isFollow).Error
-				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": "Error checking follow status"})
-					return
-				}
+				// Get follow status from cache
+				isFollow = cached.IsFollow[uint(requesterID.(float64))]
 			}
 
 			c.JSON(http.StatusOK, gin.H{
 				"data": gin.H{
-					"Profile":  user,
+					"Profile":  cached.Profile,
 					"isFollow": isFollow,
 				},
 			})
@@ -270,12 +287,13 @@ func GetUserProfile(c *gin.Context) {
 		return
 	}
 
-	// Cache the user profile data
-	if cacheData, err := json.Marshal(user); err == nil {
-		_ = config.SetCache(cacheKey, cacheData, 0)
+	// Create new cache entry
+	cacheData := CachedProfileData{
+		Profile:  user,
+		IsFollow: make(map[uint]bool),
 	}
 
-	// Check follow status separately if logged in
+	// Check follow status and update cache if logged in
 	var isFollow bool
 	if loggedIn {
 		err := config.DB.Model(&models.UserFollow{}).
@@ -286,6 +304,12 @@ func GetUserProfile(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error checking follow status"})
 			return
 		}
+		cacheData.IsFollow[uint(requesterID.(float64))] = isFollow
+	}
+
+	// Cache the complete profile data
+	if jsonData, err := json.Marshal(cacheData); err == nil {
+		_ = config.SetCache(cacheKey, jsonData, 0)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -295,7 +319,6 @@ func GetUserProfile(c *gin.Context) {
 		},
 	})
 }
-
 func GetUsers(c *gin.Context) {
 	var users []models.User
 	config.DB.Find(&users)
@@ -303,9 +326,61 @@ func GetUsers(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": users})
 }
 
-func PreloadProfileCache(userData models.User, page int) {
+// Create a struct to hold both user and follow status
+type CachedProfileData struct {
+	Profile  models.User
+	IsFollow map[uint]bool
+	Version  int64 // Add version for optimistic locking
+}
+
+func PreloadProfileCache(userData models.User) {
 	cacheKey := fmt.Sprintf("user_profile:%s", userData.Username)
-	if cacheData, err := json.Marshal(userData); err == nil {
-		_ = config.SetCache(cacheKey, cacheData, 0)
+
+	// Create cache data structure
+	cacheData := CachedProfileData{
+		Profile:  userData,
+		IsFollow: make(map[uint]bool),
+	}
+
+	// Get all followers for this user
+	var follows []models.UserFollow
+	if err := config.DB.Where("followed_id = ?", userData.ID).Find(&follows).Error; err == nil {
+		// Build map of followerID -> true
+		for _, follow := range follows {
+			cacheData.IsFollow[follow.FollowerID] = true
+		}
+	}
+
+	// Cache the complete profile data
+	if jsonData, err := json.Marshal(cacheData); err == nil {
+		_ = config.SetCache(cacheKey, jsonData, 0)
+	}
+}
+
+func updateProfileCache(username string, updateFn func(*CachedProfileData)) {
+	cacheKey := fmt.Sprintf("user_profile:%s", username)
+
+	// Get existing cache
+	cachedData, err := config.GetCache(cacheKey)
+	if err != nil {
+		// If no cache exists, preload it
+		var user models.User
+		if err := config.DB.Where("username = ?", username).First(&user).Error; err == nil {
+			PreloadProfileCache(user)
+		}
+		return
+	}
+
+	var cached CachedProfileData
+	if err := json.Unmarshal([]byte(cachedData), &cached); err != nil {
+		return
+	}
+
+	// Apply update
+	updateFn(&cached)
+
+	// Write back to cache
+	if jsonData, err := json.Marshal(cached); err == nil {
+		_ = config.SetCache(cacheKey, jsonData, 0)
 	}
 }

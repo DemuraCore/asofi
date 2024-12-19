@@ -5,9 +5,12 @@ import (
 	"aso/asofi/channels" // Import the shared channel
 	"aso/asofi/config"
 	"aso/asofi/models"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -337,51 +340,45 @@ func GetPostByUser(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
 	offset := (page - 1) * limit
 
-	// Fetch user ID by username
+	// Generate cache key based on username and pagination
+	cacheKey := fmt.Sprintf("user_posts:%s:page:%d:limit:%d", username, page, limit)
+
+	// Try to get from cache first
+	if cachedData, err := config.GetCache(cacheKey); err == nil && cachedData != "" {
+		var posts []models.Post
+		if err := json.Unmarshal([]byte(cachedData), &posts); err == nil {
+			// Convert posts to postDataList, handling logged-in user status
+			postDataList := convertPostsToPostData(posts, c)
+			c.JSON(http.StatusOK, gin.H{"data": postDataList})
+			return
+		}
+	}
+
+	// If not in cache, fetch from database
 	var user models.User
 	if err := config.DB.Select("id").Where("username = ?", username).First(&user).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
 
-	// Fetch posts by user ID with pagination and preload User
 	var posts []models.Post
-	if err := config.DB.Where("user_id = ?", user.ID).Order("created_at desc").Limit(limit).Offset(offset).Preload("User").Find(&posts).Error; err != nil {
+	if err := config.DB.Where("user_id = ?", user.ID).
+		Order("created_at desc").
+		Limit(limit).
+		Offset(offset).
+		Preload("User").
+		Find(&posts).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error fetching posts"})
 		return
 	}
 
-	userID, userExists := c.Get("user_id")
-	var postDataList []PostData
-
-	if userExists {
-		userUintID := uint(userID.(float64))
-
-		// Fetch all liked posts by the user in a single query
-		var likedPostIDs []uint
-		if err := config.DB.Model(&models.Like{}).
-			Where("user_id = ? AND post_id IN ?", userUintID, getPostIDs(posts)).
-			Pluck("post_id", &likedPostIDs).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-
-		likedPostMap := createPostIDMap(likedPostIDs)
-
-		// Construct the post data list
-		for _, post := range posts {
-			postDataList = append(postDataList, PostData{
-				Post:    post,
-				IsLiked: likedPostMap[post.ID], // Check if post is liked using the map
-			})
-		}
-	} else {
-		// If user not logged in, just construct post data without `IsLiked`
-		for _, post := range posts {
-			postDataList = append(postDataList, PostData{Post: post})
-		}
+	// Cache the posts
+	if cacheData, err := json.Marshal(posts); err == nil {
+		_ = config.SetCache(cacheKey, cacheData, 5*time.Minute) // Cache for 5 minutes
 	}
 
+	// Convert posts to postDataList, handling logged-in user status
+	postDataList := convertPostsToPostData(posts, c)
 	c.JSON(http.StatusOK, gin.H{"data": postDataList})
 }
 
@@ -399,4 +396,32 @@ func createPostIDMap(postIDs []uint) map[uint]bool {
 		postMap[id] = true
 	}
 	return postMap
+}
+
+func convertPostsToPostData(posts []models.Post, c *gin.Context) []PostData {
+	userID, userExists := c.Get("user_id")
+	var postDataList []PostData
+
+	if userExists {
+		userUintID := uint(userID.(float64))
+		var likedPostIDs []uint
+		if err := config.DB.Model(&models.Like{}).
+			Where("user_id = ? AND post_id IN ?", userUintID, getPostIDs(posts)).
+			Pluck("post_id", &likedPostIDs).Error; err == nil {
+			likedPostMap := createPostIDMap(likedPostIDs)
+			for _, post := range posts {
+				postDataList = append(postDataList, PostData{
+					Post:    post,
+					IsLiked: likedPostMap[post.ID],
+				})
+			}
+			return postDataList
+		}
+	}
+
+	// Default case or error case: return posts without like status
+	for _, post := range posts {
+		postDataList = append(postDataList, PostData{Post: post})
+	}
+	return postDataList
 }
