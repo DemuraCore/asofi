@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"math"
 	"net/http"
 	"strconv"
 	"time"
@@ -175,16 +174,10 @@ func GetComments(c *gin.Context) {
 
 	// Try to get from cache
 	if cachedData, err := config.GetCache(cacheKey); err == nil && cachedData != "" {
-		var result struct {
-			Comments    []models.Comment `json:"comments"`
-			TotalPages  int              `json:"total_pages"`
-			CurrentPage int              `json:"current_page"`
-		}
-		if err := json.Unmarshal([]byte(cachedData), &result); err == nil {
+
+		if err := json.Unmarshal([]byte(cachedData), &models.Comment{}); err == nil {
 			c.JSON(http.StatusOK, gin.H{
-				"data":         result.Comments,
-				"total_pages":  result.TotalPages,
-				"current_page": result.CurrentPage,
+				"data": cachedData,
 			})
 			return
 		}
@@ -197,8 +190,6 @@ func GetComments(c *gin.Context) {
 		return
 	}
 
-	totalPages := int(math.Ceil(float64(totalCount) / float64(limit)))
-
 	var comments []models.Comment
 	if err := config.DB.Preload("User").
 		Where("post_id = ?", postID).
@@ -210,29 +201,15 @@ func GetComments(c *gin.Context) {
 		return
 	}
 
-	// Cache the result
-	result := struct {
-		Comments    []models.Comment `json:"comments"`
-		TotalPages  int              `json:"total_pages"`
-		CurrentPage int              `json:"current_page"`
-	}{
-		Comments:    comments,
-		TotalPages:  totalPages,
-		CurrentPage: page,
-	}
-
-	if cacheData, err := json.Marshal(result); err == nil {
+	if cacheData, err := json.Marshal(comments); err == nil {
 		_ = config.SetCache(cacheKey, cacheData, 5*time.Minute)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"data":         comments,
-		"total_pages":  totalPages,
-		"current_page": page,
+		"data": comments,
 	})
 }
 
-// Invalidate cache for all pages of the post
 func InvalidateCommentsCache(postID uint) {
 	prefix := fmt.Sprintf("post:%d:comments:page:", postID)
 	iter := config.RedisClient.Scan(config.RedisCtx, 0, prefix+"*", 0).Iterator()
@@ -249,23 +226,6 @@ func PreloadCommentsCache(postID uint, page int) {
 	limit := 10
 	offset := (page - 1) * limit
 	cacheKey := fmt.Sprintf("post:%d:comments:page:%d", postID, page)
-
-	// First get total count of comments for this post
-	var totalCount int64
-	if err := config.DB.Model(&models.Comment{}).Where("post_id = ?", postID).Count(&totalCount).Error; err != nil {
-		log.Printf("Error getting comment count: %v", err)
-		return
-	}
-
-	// Calculate total pages
-	totalPages := int(math.Ceil(float64(totalCount) / float64(limit)))
-
-	// Store total pages in cache
-	pagesKey := fmt.Sprintf("post:%d:comments:total_pages", postID)
-	if err := config.SetCache(pagesKey, totalPages, 5*time.Minute); err != nil {
-		log.Printf("Error caching total pages: %v", err)
-	}
-
 	// Get comments for requested page
 	var comments []models.Comment
 	if err := config.DB.Preload("User").Where("post_id = ?", postID).
@@ -274,18 +234,7 @@ func PreloadCommentsCache(postID uint, page int) {
 		Offset(offset).
 		Find(&comments).Error; err == nil {
 
-		// Cache the comments with metadata
-		cacheData := struct {
-			Comments    []models.Comment `json:"comments"`
-			TotalPages  int              `json:"total_pages"`
-			CurrentPage int              `json:"current_page"`
-		}{
-			Comments:    comments,
-			TotalPages:  totalPages,
-			CurrentPage: page,
-		}
-
-		if data, err := json.Marshal(cacheData); err == nil {
+		if data, err := json.Marshal(comments); err == nil {
 			_ = config.SetCache(cacheKey, data, 5*time.Minute)
 		}
 	}
