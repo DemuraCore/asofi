@@ -14,16 +14,14 @@ var MinioClient *minio.Client
 
 func init() {
 	// Load environment variables from .env file
-	err := godotenv.Load()
-	if err != nil {
-		log.Fatalf("Error loading .env file: %v", err)
-	}
+	godotenv.Load()
 
 	accessKeyID := os.Getenv("MINIO_ACCESS")
 	secretAccessKey := os.Getenv("MINIO_SECRET")
 	endpoint := os.Getenv("MINIO_ENDPOINT")
 	// useSSL := true
 
+	var err error
 	MinioClient, err = minio.New(endpoint, &minio.Options{
 		Creds: credentials.NewStaticV4(accessKeyID, secretAccessKey, ""),
 	})
