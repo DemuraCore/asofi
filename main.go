@@ -17,7 +17,10 @@ import (
 )
 
 func main() {
-	godotenv.Load()
+	err := godotenv.Load()
+	if err != nil {
+		log.Println(".env not found, switching to production mode")
+	}
 	config.ConnectDB()
 	config.InitRedis()
 	config.InitMinio()
