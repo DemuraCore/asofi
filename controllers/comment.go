@@ -78,9 +78,8 @@ func CreateComment(c *gin.Context) {
 		channels.FeedBroadcast <- post
 		channels.CommentBroadcast <- comment
 
-		InvalidateCommentsCache(post.ID)
 		InvalidatePostCache(comment.PostID)
-		PreloadCommentsCache(post.ID, 1) // Preload page 1 cache after invalidation
+		RefreshCommentsCache(post.ID, 1)
 	}()
 }
 
@@ -119,9 +118,8 @@ func DeleteComment(c *gin.Context) {
 		channels.FeedBroadcast <- post
 		comment.UserID = 0
 		channels.CommentBroadcast <- comment
-		InvalidateCommentsCache(comment.PostID)
 		InvalidatePostCache(comment.PostID)
-		PreloadCommentsCache(comment.PostID, 1) // Preload page 1 cache after invalidation
+		RefreshCommentsCache(post.ID, 1)
 	}()
 
 	c.JSON(http.StatusOK, gin.H{"message": "Comment deleted successfully"})
@@ -157,9 +155,8 @@ func UpdateComment(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": comment})
 	go func() {
 		channels.CommentBroadcast <- comment
-		InvalidateCommentsCache(comment.PostID)
+		RefreshCommentsCache(comment.PostID, 1)
 		InvalidatePostCache(comment.PostID)
-		PreloadCommentsCache(comment.PostID, 1) // Preload page 1 cache after invalidation
 	}()
 
 }
@@ -210,7 +207,8 @@ func GetComments(c *gin.Context) {
 	})
 }
 
-func InvalidateCommentsCache(postID uint) {
+func RefreshCommentsCache(postID uint, page int) {
+	// Invalidate cache
 	prefix := fmt.Sprintf("post:%d:comments:page:", postID)
 	iter := config.RedisClient.Scan(config.RedisCtx, 0, prefix+"*", 0).Iterator()
 	for iter.Next(config.RedisCtx) {
@@ -219,10 +217,8 @@ func InvalidateCommentsCache(postID uint) {
 	if err := iter.Err(); err != nil {
 		log.Printf("Error invalidating cache: %v", err)
 	}
-}
 
-// Preload cache for a specific page of comments
-func PreloadCommentsCache(postID uint, page int) {
+	// Preload cache for a specific page of comments
 	limit := 10
 	offset := (page - 1) * limit
 	cacheKey := fmt.Sprintf("post:%d:comments:page:%d", postID, page)

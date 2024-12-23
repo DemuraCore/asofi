@@ -24,7 +24,7 @@ func main() {
 
 	// config.DB.AutoMigrate(&models.User{}, &models.Post{}, &models.Comment{}, &models.Like{}, &models.Session{}, &models.OTP{}, &models.Role{}, &models.UserFollow{}, &models.Report{})
 
-	initializeDB()
+	// initializeDB()
 
 	r := gin.Default()
 	r.Use(cors.New(cors.Config{
@@ -39,6 +39,7 @@ func main() {
 	r.POST("/register", controllers.Register)
 	r.POST("/login", controllers.Login)
 	r.DELETE("/logout", controllers.Logout)
+	r.MaxMultipartMemory = 8 << 20 // 8 MiB
 
 	core := r.Group("/")
 	core.Use(middlewares.AuthMiddleware())
@@ -67,6 +68,7 @@ func main() {
 	me := core.Group("/me")
 	me.GET("/follow/:id", controllers.Follow)
 	me.DELETE("/unfollow/:id", controllers.Unfollow)
+	me.PATCH("/update", controllers.EditProfile)
 
 	r.GET("/ws", websocket.HandleConnections)
 

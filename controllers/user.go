@@ -4,12 +4,17 @@ import (
 	"aso/asofi/channels"
 	"aso/asofi/config"
 	"aso/asofi/models"
+	"context"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/minio/minio-go/v7"
 	"gorm.io/gorm"
 )
 
@@ -383,4 +388,71 @@ func updateProfileCache(username string, updateFn func(*CachedProfileData)) {
 	if jsonData, err := json.Marshal(cached); err == nil {
 		_ = config.SetCache(cacheKey, jsonData, 0)
 	}
+}
+
+type UpdateProfileInput struct {
+	Name     string                `form:"name" json:"name" binding:"required"`
+	Username string                `form:"username" json:"username" binding:"required"`
+	Bio      string                `form:"bio" json:"bio" binding:"required"`
+	Avatar   *multipart.FileHeader `form:"avatar" json:"avatar"`
+}
+
+func EditProfile(c *gin.Context) {
+	userID := int(c.MustGet("user_id").(float64))
+	cacheKey := fmt.Sprintf("user:%d", userID)
+	var user models.User
+	if err := config.DB.Where("id = ?", userID).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	var input UpdateProfileInput
+	if err := c.ShouldBind(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Handle avatar upload
+	file, header, err := c.Request.FormFile("avatar")
+	if err == nil {
+		defer file.Close()
+
+		// Generate a unique file name
+		fileName := fmt.Sprintf("%d_%s", userID, filepath.Base(header.Filename))
+
+		// Upload the file to Minio
+		_, err = config.MinioClient.PutObject(context.Background(), "aso", fileName, file, header.Size, minio.PutObjectOptions{
+
+			ContentType: header.Header.Get("Content-Type"),
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err})
+			return
+		}
+
+		// Set the avatar URL
+		user.Avatar = fmt.Sprintf("https://%s/%s/%s", os.Getenv("MINIO_ENDPOINT"), "aso", fileName)
+	}
+
+	user.Name = input.Name
+	user.Username = input.Username
+	user.Bio = input.Bio
+	if err := config.DB.Save(&user).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error updating user profile"})
+		return
+	}
+
+	// Update cache
+	updateProfileCache(user.Username, func(cache *CachedProfileData) {
+		cache.Profile = user
+		cache.Version++
+	})
+	InvalidateUserPostsCache(user.ID)
+	config.RedisClient.Del(config.RedisCtx, cacheKey)
+
+	go func() {
+		channels.ProfileBroadcast <- user
+	}()
+
+	c.JSON(http.StatusOK, gin.H{"data": user})
 }
