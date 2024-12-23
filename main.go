@@ -70,6 +70,13 @@ func main() {
 	me.DELETE("/unfollow/:id", controllers.Unfollow)
 	me.PATCH("/update", controllers.EditProfile)
 
+	// simple health check
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(200, gin.H{
+			"message": "pong",
+		})
+	})
+
 	r.GET("/ws", websocket.HandleConnections)
 
 	go websocket.HandleMessages()
