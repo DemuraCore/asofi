@@ -4,7 +4,6 @@ import (
 	"log"
 	"os"
 
-	"github.com/joho/godotenv"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
@@ -12,9 +11,7 @@ import (
 // Initialize Minio client (add this to your config package)
 var MinioClient *minio.Client
 
-func init() {
-	// Load environment variables from .env file
-	godotenv.Load()
+func InitMinio() {
 
 	accessKeyID := os.Getenv("MINIO_ACCESS")
 	secretAccessKey := os.Getenv("MINIO_SECRET")
