@@ -26,5 +26,5 @@ func InitMinio() {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	log.Printf("%#v\n", minioClient)
+	log.Printf("%#v\n", MinioClient)
 }
