@@ -117,7 +117,7 @@ func initializeDB() {
 				Username: "admin",
 				Name:     "Admin User",
 				Verified: true,
-				Email:    "admin@example.com",
+				Email:    "aso@admin.com",
 				Password: string(hashedPassword),
 				RoleID:   adminRole.ID,
 			}
